@@ -18,6 +18,7 @@ package com.google.android.exoplayer2.source.hls.playlist;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.SystemClock;
+import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.ParserException;
@@ -25,6 +26,10 @@ import com.google.android.exoplayer2.source.MediaSourceEventListener.EventDispat
 import com.google.android.exoplayer2.source.hls.HlsDataSourceFactory;
 import com.google.android.exoplayer2.source.hls.playlist.HlsMasterPlaylist.HlsUrl;
 import com.google.android.exoplayer2.source.hls.playlist.HlsMediaPlaylist.Segment;
+import com.google.android.exoplayer2.source.hls.playlist.trackerstrategy.DefaultHlsPlaylistTrackerStrategy;
+import com.google.android.exoplayer2.source.hls.playlist.trackerstrategy.HlsPlaylistTrackerStrategy;
+import com.google.android.exoplayer2.source.hls.playlist.trackerstrategy.HlsPlaylistTrackerStrategyData;
+import com.google.android.exoplayer2.source.hls.playlist.trackerstrategy.HlsPlaylistTrackerStrategyFactory;
 import com.google.android.exoplayer2.upstream.DataSource;
 import com.google.android.exoplayer2.upstream.LoadErrorHandlingPolicy;
 import com.google.android.exoplayer2.upstream.Loader;
@@ -66,6 +71,8 @@ public final class DefaultHlsPlaylistTracker
   private @Nullable HlsMediaPlaylist primaryUrlSnapshot;
   private boolean isLive;
   private long initialStartTimeUs;
+  private @NonNull
+  HlsPlaylistTrackerStrategyFactory playlistStrategyFactory;
 
   /**
    * @param dataSourceFactory A factory for {@link DataSource} instances.
@@ -93,9 +100,27 @@ public final class DefaultHlsPlaylistTracker
       HlsDataSourceFactory dataSourceFactory,
       LoadErrorHandlingPolicy loadErrorHandlingPolicy,
       HlsPlaylistParserFactory playlistParserFactory) {
+    this(dataSourceFactory,
+        loadErrorHandlingPolicy,
+        playlistParserFactory,
+        new DefaultHlsPlaylistTrackerStrategy.Factory());
+  }
+
+  /**
+   * @param dataSourceFactory A factory for {@link DataSource} instances.
+   * @param loadErrorHandlingPolicy The {@link LoadErrorHandlingPolicy}.
+   * @param playlistParserFactory An {@link HlsPlaylistParserFactory}.
+   * @param playlistStrategyFactory A {@link HlsPlaylistTrackerStrategyFactory}
+   */
+  public DefaultHlsPlaylistTracker(
+      HlsDataSourceFactory dataSourceFactory,
+      LoadErrorHandlingPolicy loadErrorHandlingPolicy,
+      HlsPlaylistParserFactory playlistParserFactory,
+      @NonNull HlsPlaylistTrackerStrategyFactory playlistStrategyFactory) {
     this.dataSourceFactory = dataSourceFactory;
     this.playlistParserFactory = playlistParserFactory;
     this.loadErrorHandlingPolicy = loadErrorHandlingPolicy;
+    this.playlistStrategyFactory = playlistStrategyFactory;
     listeners = new ArrayList<>();
     playlistBundles = new IdentityHashMap<>();
     initialStartTimeUs = C.TIME_UNSET;
@@ -626,14 +651,18 @@ public final class DefaultHlsPlaylistTracker
           }
         }
       }
-      // Do not allow the playlist to load again within the target duration if we obtained a new
-      // snapshot, or half the target duration otherwise.
+
+      // Let the HlsPlaylistTrackerStrategy determine the earliest next load time (ms).  Some
+      // networks, including but not limited to VDMS, need a unique strategy to determine the value
+      // for earliestNextLoadTimeMs to reduce re-bufferring.  If an HlsPlaylistTrackerStrategy has
+      // not been provided, then the DefaultHlsPlaylistTrackerStrategy is provided and used by
+      // default.
+      HlsPlaylistTrackerStrategy playlistStrategy = playlistStrategyFactory.createHlsPlaylistStrategy();
+      HlsPlaylistTrackerStrategyData playlistStrategyData =
+          new HlsPlaylistTrackerStrategyData(playlistSnapshot, oldPlaylist, currentTimeMs);
       earliestNextLoadTimeMs =
-          currentTimeMs
-              + C.usToMs(
-                  playlistSnapshot != oldPlaylist
-                      ? playlistSnapshot.targetDurationUs
-                      : (playlistSnapshot.targetDurationUs / 2));
+          playlistStrategy.calculateEarliestNextLoadTimeMs(playlistStrategyData);
+
       // Schedule a load if this is the primary playlist and it doesn't have an end tag. Else the
       // next load will be scheduled when refreshPlaylist is called, or when this playlist becomes
       // the primary.
